@@ -6,6 +6,34 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import chalk from 'chalk';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
+import { VisualizationServer } from './visualization-server.js';
+
+// Define the type for our argv object
+interface ArgvOptions {
+  visualize: boolean;
+  port: number;
+  [key: string]: unknown;
+}
+
+// Parse command line arguments
+const argv = yargs(hideBin(process.argv))
+  .option('visualize', {
+    alias: 'v',
+    description: 'Start the visualization server',
+    type: 'boolean',
+    default: false
+  })
+  .option('port', {
+    alias: 'p',
+    description: 'Port for the visualization server',
+    type: 'number',
+    default: 3000
+  })
+  .help()
+  .alias('help', 'h')
+  .parse() as ArgvOptions;
 
 interface AtomData {
   atomId: string;
@@ -23,6 +51,9 @@ interface DecompositionState {
   subAtoms: string[];
   isCompleted: boolean;
 }
+
+// Keep track of visualization server instance
+let visualizationServer: VisualizationServer | null = null;
 
 class AtomOfThoughtsServer {
   protected atoms: Record<string, AtomData> = {};
@@ -47,8 +78,8 @@ class AtomOfThoughtsServer {
     if (!data.content || typeof data.content !== 'string') {
       throw new Error('Invalid content: must be a string');
     }
-    if (!data.atomType || typeof data.atomType !== 'string' || 
-        !['premise', 'reasoning', 'hypothesis', 'verification', 'conclusion'].includes(data.atomType as string)) {
+    if (!data.atomType || typeof data.atomType !== 'string' ||
+      !['premise', 'reasoning', 'hypothesis', 'verification', 'conclusion'].includes(data.atomType as string)) {
       throw new Error('Invalid atomType: must be one of premise, reasoning, hypothesis, verification, conclusion');
     }
     if (!Array.isArray(data.dependencies)) {
@@ -103,7 +134,7 @@ class AtomOfThoughtsServer {
     const header = typeColor(`${typeSymbol} ${atomType.toUpperCase()}: ${atomId}${depthInfo} ${isVerified ? '(✓ Verified)' : ''}`);
     const confidenceBar = this.generateConfidenceBar(confidence);
     const dependenciesText = dependencies.length > 0 ? `Dependencies: ${dependencies.join(', ')}` : 'No dependencies';
-    
+
     const border = '─'.repeat(Math.max(header.length, content.length, dependenciesText.length) + 4);
 
     return `
@@ -120,7 +151,7 @@ class AtomOfThoughtsServer {
     const barLength = 20;
     const filledBars = Math.round(confidence * barLength);
     const emptyBars = barLength - filledBars;
-    
+
     return `Confidence: [${chalk.green('█'.repeat(filledBars))}${chalk.gray('░'.repeat(emptyBars))}] ${(confidence * 100).toFixed(0)}%`;
   }
 
@@ -137,7 +168,7 @@ class AtomOfThoughtsServer {
   protected verifyAtom(atomId: string, isVerified: boolean) {
     if (this.atoms[atomId]) {
       this.atoms[atomId].isVerified = isVerified;
-      
+
       if (isVerified && this.atoms[atomId].atomType === 'conclusion') {
         this.verifiedConclusions.push(atomId);
       } else if (!isVerified && this.atoms[atomId].atomType === 'conclusion') {
@@ -154,11 +185,21 @@ class AtomOfThoughtsServer {
           // Mark the hypotheses as verified
           verifiedHypothesisIds.forEach(hypId => {
             this.atoms[hypId].isVerified = true;
+            
+            // Update visualization if server is active
+            if (visualizationServer) {
+              visualizationServer.updateAtom(this.atoms[hypId]);
+            }
           });
           
           // Check if this should trigger a contraction
           this.checkForContraction(verifiedHypothesisIds);
         }
+      }
+      
+      // Update visualization if server is active
+      if (visualizationServer) {
+        visualizationServer.updateAtom(this.atoms[atomId]);
       }
     }
   }
@@ -171,7 +212,7 @@ class AtomOfThoughtsServer {
 
     // Generate a unique ID for this decomposition
     const decompositionId = `decomp_${Date.now()}`;
-    
+
     this.decompositionStates[decompositionId] = {
       originalAtomId: atomId,
       subAtoms: [],
@@ -179,9 +220,9 @@ class AtomOfThoughtsServer {
     };
 
     this.currentDecompositionId = decompositionId;
-    
+
     console.error(chalk.cyan(`🔍 Starting decomposition of atom ${atomId} (ID: ${decompositionId})`));
-    
+
     return decompositionId;
   }
 
@@ -190,28 +231,33 @@ class AtomOfThoughtsServer {
     if (!this.decompositionStates[decompositionId]) {
       throw new Error(`Decomposition with ID ${decompositionId} not found`);
     }
-    
+
     if (this.decompositionStates[decompositionId].isCompleted) {
       throw new Error(`Decomposition ${decompositionId} is already completed`);
     }
-    
+
     if (!this.atoms[atomId]) {
       throw new Error(`Atom with ID ${atomId} not found`);
     }
-    
+
     // Calculate depth for the new atom
     const parentDepth = this.atoms[this.decompositionStates[decompositionId].originalAtomId].depth || 0;
     this.atoms[atomId].depth = parentDepth + 1;
-    
+
     // Check if we've hit the maximum depth
     if (this.atoms[atomId].depth >= this.maxDepth) {
       console.error(chalk.yellow(`⚠️ Maximum depth ${this.maxDepth} reached with atom ${atomId}`));
     }
-    
+
     this.decompositionStates[decompositionId].subAtoms.push(atomId);
-    
+
     console.error(chalk.cyan(`➕ Added atom ${atomId} to decomposition ${decompositionId}`));
-    
+
+    // Update visualization if server is active
+    if (visualizationServer) {
+      visualizationServer.updateAtom(this.atoms[atomId]);
+    }
+
     return true;
   }
 
@@ -220,15 +266,15 @@ class AtomOfThoughtsServer {
     if (!this.decompositionStates[decompositionId]) {
       throw new Error(`Decomposition with ID ${decompositionId} not found`);
     }
-    
+
     this.decompositionStates[decompositionId].isCompleted = true;
-    
+
     if (this.currentDecompositionId === decompositionId) {
       this.currentDecompositionId = null;
     }
-    
+
     console.error(chalk.green(`✅ Completed decomposition ${decompositionId}`));
-    
+
     return true;
   }
 
@@ -236,10 +282,10 @@ class AtomOfThoughtsServer {
   private checkForContraction(verifiedAtomIds: string[]): void {
     // Find decomposition states that have these atoms as sub-atoms
     for (const [decompId, state] of Object.entries(this.decompositionStates)) {
-      if (state.isCompleted && 
-          verifiedAtomIds.some(id => state.subAtoms.includes(id)) && 
-          this.areAllSubAtomsVerified(state.subAtoms)) {
-        
+      if (state.isCompleted &&
+        verifiedAtomIds.some(id => state.subAtoms.includes(id)) &&
+        this.areAllSubAtomsVerified(state.subAtoms)) {
+
         // All sub-atoms are verified, perform contraction
         this.performContraction(decompId);
       }
@@ -253,20 +299,25 @@ class AtomOfThoughtsServer {
   private performContraction(decompositionId: string): void {
     const state = this.decompositionStates[decompositionId];
     if (!state) return;
-    
+
     const originalAtom = this.atoms[state.originalAtomId];
     if (!originalAtom) return;
-    
+
     // Calculate combined confidence from sub-atoms
     const subAtomConfidences = state.subAtoms.map(id => this.atoms[id]?.confidence || 0);
     const averageConfidence = subAtomConfidences.reduce((sum, conf) => sum + conf, 0) / subAtomConfidences.length;
-    
+
     // Mark the original atom as verified with the calculated confidence
     originalAtom.confidence = averageConfidence;
     originalAtom.isVerified = true;
-    
+
     console.error(chalk.magenta(`🔄 Contracted decomposition ${decompositionId} back to atom ${state.originalAtomId} with confidence ${(averageConfidence * 100).toFixed(0)}%`));
-    
+
+    // Update visualization if server is active
+    if (visualizationServer) {
+      visualizationServer.updateAtom(originalAtom);
+    }
+
     // If the contracted atom is a hypothesis and is verified with high confidence, 
     // we might want to automatically create a conclusion based on it
     if (originalAtom.atomType === 'hypothesis' && originalAtom.confidence >= 0.8) {
@@ -277,7 +328,7 @@ class AtomOfThoughtsServer {
   protected suggestConclusion(verifiedHypothesis: AtomData): string {
     // Create a new conclusion atom based on the verified hypothesis
     const conclusionId = `C${Object.keys(this.atoms).filter(id => id.startsWith('C')).length + 1}`;
-    
+
     const conclusionAtom: AtomData = {
       atomId: conclusionId,
       content: `Based on verified hypothesis: ${verifiedHypothesis.content}`,
@@ -288,12 +339,17 @@ class AtomOfThoughtsServer {
       isVerified: false,
       depth: verifiedHypothesis.depth, // Same depth as the hypothesis
     };
-    
+
     this.atoms[conclusionId] = conclusionAtom;
     this.atomOrder.push(conclusionId);
-    
+
     console.error(chalk.green(`🏆 Suggested conclusion ${conclusionId} based on verified hypothesis ${verifiedHypothesis.atomId}`));
-    
+
+    // Update visualization if server is active
+    if (visualizationServer) {
+      visualizationServer.updateAtom(conclusionAtom);
+    }
+
     return conclusionId;
   }
 
@@ -301,10 +357,10 @@ class AtomOfThoughtsServer {
   protected shouldTerminate(): boolean {
     // Check if we have any atoms at max depth
     const atMaxDepth = Object.values(this.atoms).some(atom => atom.depth !== undefined && atom.depth >= this.maxDepth);
-    
+
     // Check if we have any verified conclusions with high confidence
     const hasStrongConclusion = this.verifiedConclusions.some(id => this.atoms[id] && this.atoms[id].confidence >= 0.9);
-    
+
     return atMaxDepth || hasStrongConclusion;
   }
 
@@ -312,26 +368,26 @@ class AtomOfThoughtsServer {
   public getTerminationStatus(): { shouldTerminate: boolean; reason: string } {
     const atMaxDepth = Object.values(this.atoms).some(atom => atom.depth !== undefined && atom.depth >= this.maxDepth);
     const hasStrongConclusion = this.verifiedConclusions.some(id => this.atoms[id] && this.atoms[id].confidence >= 0.9);
-    
+
     if (atMaxDepth && hasStrongConclusion) {
-      return { 
-        shouldTerminate: true, 
-        reason: 'Maximum depth reached and strong conclusion found' 
+      return {
+        shouldTerminate: true,
+        reason: 'Maximum depth reached and strong conclusion found'
       };
     } else if (atMaxDepth) {
-      return { 
-        shouldTerminate: true, 
-        reason: 'Maximum depth reached' 
+      return {
+        shouldTerminate: true,
+        reason: 'Maximum depth reached'
       };
     } else if (hasStrongConclusion) {
-      return { 
-        shouldTerminate: true, 
-        reason: 'Strong conclusion found' 
+      return {
+        shouldTerminate: true,
+        reason: 'Strong conclusion found'
       };
     } else {
-      return { 
-        shouldTerminate: false, 
-        reason: 'Continue reasoning' 
+      return {
+        shouldTerminate: false,
+        reason: 'Continue reasoning'
       };
     }
   }
@@ -339,20 +395,20 @@ class AtomOfThoughtsServer {
   // Get the best conclusion if we should terminate
   public getBestConclusion(): AtomData | null {
     if (this.verifiedConclusions.length === 0) return null;
-    
+
     // Sort by confidence and return the highest
     const sortedConclusions = [...this.verifiedConclusions]
       .map(id => this.atoms[id])
       .filter(atom => atom !== undefined)
       .sort((a, b) => b.confidence - a.confidence);
-    
+
     return sortedConclusions[0] || null;
   }
 
   public processAtom(input: unknown): { content: Array<{ type: string; text: string }>; isError?: boolean } {
     try {
       const validatedInput = this.validateAtomData(input);
-      
+
       // Validate dependencies if they exist
       if (validatedInput.dependencies.length > 0 && !this.validateDependencies(validatedInput.dependencies)) {
         throw new Error('Invalid dependencies: one or more dependency atoms do not exist');
@@ -363,7 +419,7 @@ class AtomOfThoughtsServer {
         const depthsOfDependencies = validatedInput.dependencies
           .map(depId => (this.atoms[depId]?.depth !== undefined ? this.atoms[depId].depth! : 0))
           .filter(depth => depth !== undefined);
-        
+
         validatedInput.depth = depthsOfDependencies.length > 0
           ? Math.max(...depthsOfDependencies) + 1
           : 0;
@@ -376,10 +432,15 @@ class AtomOfThoughtsServer {
 
       // Store the atom
       this.atoms[validatedInput.atomId] = validatedInput;
-      
+
       // Add to order if it's new
       if (!this.atomOrder.includes(validatedInput.atomId)) {
         this.atomOrder.push(validatedInput.atomId);
+      }
+
+      // Update visualization if server is active
+      if (visualizationServer) {
+        visualizationServer.updateAtom(validatedInput);
       }
 
       // Automatically add to current decomposition if there is one
@@ -407,7 +468,7 @@ class AtomOfThoughtsServer {
       // Check for termination
       const terminationStatus = this.getTerminationStatus();
       let bestConclusion = null;
-      
+
       if (terminationStatus.shouldTerminate) {
         bestConclusion = this.getBestConclusion();
         console.error(chalk.red(`🛑 Termination condition met: ${terminationStatus.reason}`));
@@ -415,7 +476,7 @@ class AtomOfThoughtsServer {
           console.error(chalk.green(`🏆 Best conclusion: ${bestConclusion.atomId} - ${bestConclusion.content}`));
         }
       }
-      
+
       // Get atoms required for the response
       const dependentAtoms = this.getDependentAtoms(validatedInput.atomId);
       const conflictingAtoms = this.findConflictingAtoms(validatedInput);
@@ -459,7 +520,7 @@ class AtomOfThoughtsServer {
 
   // Get atoms that depend on the given atom
   private getDependentAtoms(atomId: string): string[] {
-    return Object.keys(this.atoms).filter(id => 
+    return Object.keys(this.atoms).filter(id =>
       this.atoms[id].dependencies.includes(atomId)
     );
   }
@@ -473,11 +534,11 @@ class AtomOfThoughtsServer {
     // For conclusions and hypotheses, look for others with similar types but different content
     return Object.keys(this.atoms).filter(id => {
       const otherAtom = this.atoms[id];
-      return id !== atom.atomId && 
-             (otherAtom.atomType === 'conclusion' || otherAtom.atomType === 'hypothesis') &&
-             otherAtom.content !== atom.content &&
-             // Simple heuristic for conflict: share at least one dependency
-             atom.dependencies.some(dep => otherAtom.dependencies.includes(dep));
+      return id !== atom.atomId &&
+        (otherAtom.atomType === 'conclusion' || otherAtom.atomType === 'hypothesis') &&
+        otherAtom.content !== atom.content &&
+        // Simple heuristic for conflict: share at least one dependency
+        atom.dependencies.some(dep => otherAtom.dependencies.includes(dep));
     });
   }
 }
@@ -493,13 +554,18 @@ class AtomOfThoughtsLightServer extends AtomOfThoughtsServer {
   public processAtom(input: unknown): { content: Array<{ type: string; text: string }>; isError?: boolean } {
     try {
       const validatedInput = this.validateAtomData(input);
-      
+
       // Store the atom
       this.atoms[validatedInput.atomId] = validatedInput;
-      
+
       // Add to order if it's new
       if (!this.atomOrder.includes(validatedInput.atomId)) {
         this.atomOrder.push(validatedInput.atomId);
+      }
+      
+      // Update visualization if server is active
+      if (visualizationServer) {
+        visualizationServer.updateAtom(validatedInput);
       }
 
       // Format and display the atom with simplified output
@@ -523,7 +589,7 @@ class AtomOfThoughtsLightServer extends AtomOfThoughtsServer {
       // Simplified termination check
       const shouldTerminate = this.shouldTerminate();
       const bestConclusion = shouldTerminate ? this.getBestConclusion() : null;
-      
+
       // Basic response with less processing
       return {
         content: [{
@@ -781,49 +847,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const params = request.params.arguments as Record<string, unknown>;
       const command = params.command as string;
-      
+
       let result: any = { status: 'error', message: 'Unknown command' };
-      
+
       switch (command) {
         case 'decompose':
           const atomId = params.atomId as string;
           if (!atomId) throw new Error('atomId is required for decompose command');
-          
+
           const decompositionId = atomServer.startDecomposition(atomId);
-          result = { 
-            status: 'success', 
+          result = {
+            status: 'success',
             command: 'decompose',
             decompositionId,
             message: `Started decomposition of atom ${atomId}`
           };
           break;
-          
+
         case 'complete_decomposition':
           const decompId = params.decompositionId as string;
           if (!decompId) throw new Error('decompositionId is required for complete_decomposition command');
-          
+
           const completed = atomServer.completeDecomposition(decompId);
-          result = { 
-            status: 'success', 
+          result = {
+            status: 'success',
             command: 'complete_decomposition',
             completed,
             message: `Completed decomposition ${decompId}`
           };
           break;
-          
+
         case 'termination_status':
           const status = atomServer.getTerminationStatus();
-          result = { 
-            status: 'success', 
+          result = {
+            status: 'success',
             command: 'termination_status',
             ...status
           };
           break;
-          
+
         case 'best_conclusion':
           const bestConclusion = atomServer.getBestConclusion();
-          result = { 
-            status: 'success', 
+          result = {
+            status: 'success',
             command: 'best_conclusion',
             conclusion: bestConclusion ? {
               atomId: bestConclusion.atomId,
@@ -832,22 +898,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             } : null
           };
           break;
-          
+
         case 'set_max_depth':
           const maxDepth = params.maxDepth as number;
-          if (typeof maxDepth !== 'number' || maxDepth <= 0) 
+          if (typeof maxDepth !== 'number' || maxDepth <= 0)
             throw new Error('maxDepth must be a positive number');
-          
+
           atomServer.maxDepth = maxDepth;
-          result = { 
-            status: 'success', 
+          result = {
+            status: 'success',
             command: 'set_max_depth',
             maxDepth,
             message: `Maximum depth set to ${maxDepth}`
           };
           break;
       }
-      
+
       return {
         content: [{
           type: "text",
@@ -878,9 +944,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function runServer() {
+  // Initialize visualization server if requested
+  if (argv.visualize) {
+    try {
+      visualizationServer = new VisualizationServer(argv.port);
+      visualizationServer.start();
+      console.error(chalk.green(`Visualization server started on port ${argv.port}`));
+      console.error(chalk.green(`Open http://localhost:${argv.port} in your browser to view the AoT graph visualization`));
+    } catch (error) {
+      console.error(chalk.red(`Failed to start visualization server: ${error}`));
+      visualizationServer = null;
+    }
+  }
+
+  // Start the MCP server
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Atom of Thoughts MCP Server running on stdio");
+  
+  // Add welcome message about visualization
+  if (argv.visualize && visualizationServer) {
+    console.error(chalk.cyan(`
+╔════════════════════════════════════════════════════════════════════════════╗
+║ AoT Visualization is active!                                               ║
+║                                                                            ║
+║ Open http://localhost:${argv.port.toString().padEnd(5)} in your browser to view the AoT graph.      ║
+║                                                                            ║
+║ The visualization updates in real-time as you add and modify atoms.        ║
+║                                                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+`));
+  } else if (argv.visualize) {
+    console.error(chalk.yellow(`
+╔════════════════════════════════════════════════════════════════════════════╗
+║ Visualization was requested but could not be started.                      ║
+║ Please check the logs for errors.                                          ║
+╚════════════════════════════════════════════════════════════════════════════╝
+`));
+  }
 }
 
 runServer().catch((error) => {

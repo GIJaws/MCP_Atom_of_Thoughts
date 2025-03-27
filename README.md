@@ -170,6 +170,32 @@ A command tool to control the decomposition-contraction mechanism and automatic 
 5. **set_max_depth**: Change the maximum depth limit
    - Required parameter: `maxDepth`
 
+### Visualization Feature
+
+This MCP server includes an optional visualization feature that displays the Atom of Thoughts reasoning process in real-time. The visualization shows the atoms and their relationships as an interactive graph that updates as you create and modify atoms.
+
+#### Using the Visualization
+
+To enable the visualization when running the server directly:
+
+```bash
+# Start the server with visualization on default port (3000)
+node build/index.js --visualize
+
+# Specify a custom port
+node build/index.js --visualize --port 8080
+```
+
+#### Visualization Features
+
+The visualization provides:
+
+- Interactive graph view of atoms and their dependencies
+- Color-coding based on atom type
+- Confidence indicators
+- Real-time updates as the reasoning process evolves
+- Detailed information when clicking on atoms
+
 ### MCP Server Configuration
 
 To use the Atom of Thoughts MCP server, you need to register it in your Claude Desktop or Cline MCP settings. Here is an example configuration:
@@ -187,7 +213,27 @@ To use the Atom of Thoughts MCP server, you need to register it in your Claude D
 }
 ```
 
-Replace `/ABSOLUTE/PATH/TO/PARENT/FOLDER` with the actual absolute path to the project on your system. After saving the configuration, restart Claude Desktop or Cline to use the Atom of Thoughts MCP server.
+To enable the visualization feature in Claude Desktop or Cline:
+
+```json
+{ 
+  "mcpServers": { 
+    "atom-of-thoughts": { 
+      "command": "node", 
+      "args": [
+        "/ABSOLUTE/PATH/TO/PARENT/FOLDER/atom-of-thoughts/build/index.js",
+        "--visualize",
+        "--port",
+        "3000"
+      ], 
+      "disabled": false, 
+      "autoApprove": [] 
+    } 
+  } 
+}
+```
+
+Replace `/ABSOLUTE/PATH/TO/PARENT/FOLDER` with the actual absolute path to the project on your system. After saving the configuration, restart Claude Desktop or Cline to use the Atom of Thoughts MCP server, then open a browser to `http://localhost:3000` to view the visualization.
 
 For detailed implementation and code-level documentation, please refer to the source code in this repository.
 
