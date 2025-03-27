@@ -10,6 +10,8 @@ import {
 import chalk from 'chalk';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { fork } from 'child_process';
+import path from 'path';
 import { VisualizationServer } from './visualization-server.js';
 import { z } from 'zod';
 
@@ -969,45 +971,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function runServer() {
-  // Initialize visualization server if requested
   if (argv.visualize) {
-    try {
-      visualizationServer = new VisualizationServer(argv.port);
-      visualizationServer.start();
-      console.error(chalk.green(`Visualization server started on port ${argv.port}`));
-      console.error(chalk.green(`Open http://localhost:${argv.port} in your browser to view the AoT graph visualization`));
-    } catch (error) {
-      console.error(chalk.red(`Failed to start visualization server: ${error}`));
-      visualizationServer = null;
-    }
+    const visualizerPath = path.resolve('./build/visualize.js');
+    const child = fork(visualizerPath, [`--port=${argv.port}`], {
+      stdio: 'ignore',
+      detached: true
+    });
+    child.unref();
+    console.error(chalk.green(`🧠 Visualization started in separate process on port ${argv.port}`));
   }
 
-  // Start the MCP server
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Atom of Thoughts MCP Server running on stdio");
-
-  // Add welcome message about visualization
-  if (argv.visualize && visualizationServer) {
-    console.error(chalk.cyan(`
-╔════════════════════════════════════════════════════════════════════════════╗
-║ AoT Visualization is active!                                               ║
-║                                                                            ║
-║ Open http://localhost:${argv.port.toString().padEnd(5)} in your browser to view the AoT graph.      ║
-║                                                                            ║
-║ The visualization updates in real-time as you add and modify atoms.        ║
-║                                                                            ║
-╚════════════════════════════════════════════════════════════════════════════╝
-`));
-  } else if (argv.visualize) {
-    console.error(chalk.yellow(`
-╔════════════════════════════════════════════════════════════════════════════╗
-║ Visualization was requested but could not be started.                      ║
-║ Please check the logs for errors.                                          ║
-╚════════════════════════════════════════════════════════════════════════════╝
-`));
-  }
 }
+
 
 runServer().catch((error) => {
   console.error("Fatal error running server:", error);

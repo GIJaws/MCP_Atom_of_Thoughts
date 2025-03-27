@@ -10,92 +10,92 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export interface Atom {
-  atomId: string;
-  content: string;
-  atomType: 'premise' | 'reasoning' | 'hypothesis' | 'verification' | 'conclusion';
-  dependencies: string[];
-  confidence: number;
-  isVerified: boolean;
-  depth?: number;
-  created: number;
+    atomId: string;
+    content: string;
+    atomType: 'premise' | 'reasoning' | 'hypothesis' | 'verification' | 'conclusion';
+    dependencies: string[];
+    confidence: number;
+    isVerified: boolean;
+    depth?: number;
+    created: number;
 }
 
 export class VisualizationServer {
-  private app: express.Application;
-  private server: http.Server;
-  private io: SocketIOServer;
-  private port: number;
-  private atoms: Record<string, Atom> = {};
-  private atomOrder: string[] = [];
+    private app: express.Application;
+    private server: http.Server;
+    private io: SocketIOServer;
+    private port: number;
+    private atoms: Record<string, Atom> = {};
+    private atomOrder: string[] = [];
 
-  constructor(port: number = 3000) {
-    this.port = port;
-    this.app = express();
-    this.server = http.createServer(this.app);
-    this.io = new SocketIOServer(this.server);
+    constructor(port: number = 3000) {
+        this.port = port;
+        this.app = express();
+        this.server = http.createServer(this.app);
+        this.io = new SocketIOServer(this.server);
 
-    // Set up express routes
-    this.setupRoutes();
-    
-    // Set up socket.io
-    this.setupSocketIO();
-  }
+        // Set up express routes
+        this.setupRoutes();
 
-  private setupRoutes() {
-    // Serve static files from the 'public' directory
-    this.app.use(express.static(path.join(__dirname, '../public')));
-
-    // Create the visualization HTML page dynamically
-    this.app.get('/', (req, res) => {
-      res.send(this.generateHTML());
-    });
-
-    // API endpoint to get all atoms
-    this.app.get('/api/atoms', (req, res) => {
-      const atomsArray = Object.values(this.atoms);
-      res.json({
-        atoms: atomsArray,
-        atomOrder: this.atomOrder
-      });
-    });
-  }
-
-  private setupSocketIO() {
-    this.io.on('connection', (socket) => {
-      console.error(chalk.green('Visualization client connected'));
-      
-      // Send current atoms to the newly connected client
-      socket.emit('atoms-update', {
-        atoms: Object.values(this.atoms),
-        atomOrder: this.atomOrder
-      });
-    });
-  }
-
-  // Update atoms data
-  public updateAtom(atom: Atom) {
-    this.atoms[atom.atomId] = atom;
-    
-    // Add to order if it's new
-    if (!this.atomOrder.includes(atom.atomId)) {
-      this.atomOrder.push(atom.atomId);
+        // Set up socket.io
+        this.setupSocketIO();
     }
-    
-    // Emit update to all connected clients
-    this.io.emit('atom-update', atom);
-    this.io.emit('atoms-order', this.atomOrder);
-  }
 
-  // Start the server
-  public start() {
-    this.server.listen(this.port, () => {
-      console.error(chalk.green(`Visualization server running at http://localhost:${this.port}`));
-    });
-  }
+    private setupRoutes() {
+        // Serve static files from the 'public' directory
+        this.app.use(express.static(path.join(__dirname, '../public')));
 
-  // Generate HTML for the visualization page
-  private generateHTML() {
-    return `
+        // Create the visualization HTML page dynamically
+        this.app.get('/', (req, res) => {
+            res.send(this.generateHTML());
+        });
+
+        // API endpoint to get all atoms
+        this.app.get('/api/atoms', (req, res) => {
+            const atomsArray = Object.values(this.atoms);
+            res.json({
+                atoms: atomsArray,
+                atomOrder: this.atomOrder
+            });
+        });
+    }
+
+    private setupSocketIO() {
+        this.io.on('connection', (socket) => {
+            console.error(chalk.green('Visualization client connected'));
+
+            // Send current atoms to the newly connected client
+            socket.emit('atoms-update', {
+                atoms: Object.values(this.atoms),
+                atomOrder: this.atomOrder
+            });
+        });
+    }
+
+    // Update atoms data
+    public updateAtom(atom: Atom) {
+        this.atoms[atom.atomId] = atom;
+
+        // Add to order if it's new
+        if (!this.atomOrder.includes(atom.atomId)) {
+            this.atomOrder.push(atom.atomId);
+        }
+
+        // Emit update to all connected clients
+        this.io.emit('atom-update', atom);
+        this.io.emit('atoms-order', this.atomOrder);
+    }
+
+    // Start the server
+    public start() {
+        this.server.listen(this.port, () => {
+            console.error(chalk.green(`Visualization server running at http://localhost:${this.port}`));
+        });
+    }
+
+    // Generate HTML for the visualization page
+    private generateHTML() {
+        return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -462,5 +462,5 @@ export class VisualizationServer {
 </body>
 </html>
     `;
-  }
+    }
 }
