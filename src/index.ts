@@ -3,13 +3,24 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ListPromptsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import chalk from 'chalk';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { VisualizationServer } from './visualization-server.js';
+import { z } from 'zod';
 
+// Create Zod schemas for resources and prompts list methods
+const ResourcesListRequestSchema = z.object({
+  method: z.literal('resources/list')
+});
+
+const PromptsListRequestSchema = z.object({
+  method: z.literal('prompts/list')
+});
 // Define the type for our argv object
 interface ArgvOptions {
   visualize: boolean;
@@ -180,23 +191,23 @@ class AtomOfThoughtsServer {
         const verifiedHypothesisIds = this.atoms[atomId].dependencies.filter(
           depId => this.atoms[depId] && this.atoms[depId].atomType === 'hypothesis'
         );
-        
+
         if (verifiedHypothesisIds.length > 0) {
           // Mark the hypotheses as verified
           verifiedHypothesisIds.forEach(hypId => {
             this.atoms[hypId].isVerified = true;
-            
+
             // Update visualization if server is active
             if (visualizationServer) {
               visualizationServer.updateAtom(this.atoms[hypId]);
             }
           });
-          
+
           // Check if this should trigger a contraction
           this.checkForContraction(verifiedHypothesisIds);
         }
       }
-      
+
       // Update visualization if server is active
       if (visualizationServer) {
         visualizationServer.updateAtom(this.atoms[atomId]);
@@ -562,7 +573,7 @@ class AtomOfThoughtsLightServer extends AtomOfThoughtsServer {
       if (!this.atomOrder.includes(validatedInput.atomId)) {
         this.atomOrder.push(validatedInput.atomId);
       }
-      
+
       // Update visualization if server is active
       if (visualizationServer) {
         visualizationServer.updateAtom(validatedInput);
@@ -827,9 +838,23 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
+      resources: { list: true },
+      prompts: { list: true },
     },
   }
 );
+// Then use these schemas when setting request handlers
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  return {
+    resources: [] // Return an empty list of resources
+  };
+});
+
+server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  return {
+    prompts: [] // Return an empty list of prompts
+  };
+});
 
 const atomServer = new AtomOfThoughtsServer();
 const atomLightServer = new AtomOfThoughtsLightServer();
@@ -961,7 +986,7 @@ async function runServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Atom of Thoughts MCP Server running on stdio");
-  
+
   // Add welcome message about visualization
   if (argv.visualize && visualizationServer) {
     console.error(chalk.cyan(`
