@@ -4,6 +4,8 @@ import { Server as SocketIOServer } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
+import WebSocket from 'ws';
+import { isPortAvailable, canConnectToPort, waitForServerOnPort } from './port-checker.js';
 
 // Get the current file's directory
 const __filename = fileURLToPath(import.meta.url);
@@ -21,18 +23,21 @@ export interface Atom {
 }
 
 export class VisualizationServer {
+    private wsClient: WebSocket | null = null;
+    private wsReconnectInterval: NodeJS.Timeout | null = null;
     private app: express.Application;
     private server: http.Server;
     private io: SocketIOServer;
     private port: number;
     private atoms: Record<string, Atom> = {};
     private atomOrder: string[] = [];
+    private initialized: boolean = false;
 
     constructor(port: number = 3000) {
         this.port = port;
         this.app = express();
         this.server = http.createServer(this.app);
-        this.io = new SocketIOServer(this.server);
+        this.io = new SocketIOServer(this.server, { /* Add your Socket.IO options here */ });
 
         // Set up express routes
         this.setupRoutes();
@@ -72,24 +77,161 @@ export class VisualizationServer {
         });
     }
 
-    // Update atoms data
-    public updateAtom(atom: Atom) {
-        this.atoms[atom.atomId] = atom;
-
-        // Add to order if it's new
-        if (!this.atomOrder.includes(atom.atomId)) {
-            this.atomOrder.push(atom.atomId);
+    // Connect to WebSocket server (MCP server)
+    private connectToWsServer() {
+        try {
+            // Close existing connection if any
+            if (this.wsClient) {
+                this.wsClient.close();
+            }
+            
+            this.wsClient = new WebSocket('ws://localhost:8090');
+            
+            this.wsClient.on('open', () => {
+                console.error(chalk.green('Connected to MCP WebSocket server'));
+                // Clear reconnect interval if it exists
+                if (this.wsReconnectInterval) {
+                    clearInterval(this.wsReconnectInterval);
+                    this.wsReconnectInterval = null;
+                }
+            });
+            
+            this.wsClient.on('message', (data: WebSocket.Data) => {
+                try {
+                    const message = JSON.parse(data.toString());
+                    
+                    // Handle different message types
+                    if (message.type === 'atom-update' && message.data) {
+                        // Update atom in local storage
+                        const atom = message.data as Atom;
+                        this.atoms[atom.atomId] = atom;
+                        
+                        // Emit update to all connected clients
+                        this.io.emit('atom-update', atom);
+                    }
+                    else if (message.type === 'atoms-order' && Array.isArray(message.data)) {
+                        // Update atom order
+                        this.atomOrder = message.data;
+                        
+                        // Emit order update to all connected clients
+                        this.io.emit('atoms-order', this.atomOrder);
+                    }
+                } catch (error) {
+                    console.error(chalk.red('Error processing WebSocket message:'), error);
+                }
+            });
+            
+            this.wsClient.on('close', () => {
+                console.error(chalk.yellow('Disconnected from MCP WebSocket server'));
+                // Set up reconnection
+                if (!this.wsReconnectInterval) {
+                    this.wsReconnectInterval = setInterval(() => {
+                        console.error(chalk.yellow('Attempting to reconnect to MCP WebSocket server...'));
+                        this.connectToWsServer();
+                    }, 5000); // Try reconnecting every 5 seconds
+                }
+            });
+            
+            this.wsClient.on('error', (error) => {
+                console.error(chalk.red('WebSocket connection error:'), error);
+                // Connection will close automatically after error
+            });
+            
+        } catch (error) {
+            console.error(chalk.red('Failed to connect to MCP WebSocket server:'), error);
+            // Set up reconnection
+            if (!this.wsReconnectInterval) {
+                this.wsReconnectInterval = setInterval(() => {
+                    console.error(chalk.yellow('Attempting to reconnect to MCP WebSocket server...'));
+                    this.connectToWsServer();
+                }, 5000); // Try reconnecting every 5 seconds
+            }
         }
-
-        // Emit update to all connected clients
-        this.io.emit('atom-update', atom);
-        this.io.emit('atoms-order', this.atomOrder);
     }
 
+
+
+    // Initialize and start the server
+    public async initialize(): Promise<boolean> {
+        // Check if port is available
+        const portAvailable = await isPortAvailable(this.port);
+        if (!portAvailable) {
+            console.error(chalk.yellow(`Visualization server port ${this.port} is already in use.`));
+            console.error(chalk.yellow('This likely means another visualization server is already running.'));
+            return false;
+        }
+
+        // Check if WebSocket server is available (wait a bit for it to start)
+        const wsAvailable = await waitForServerOnPort(8090, 5, 1000);
+        if (!wsAvailable) {
+            console.error(chalk.yellow('Could not connect to MCP WebSocket server, visualization may not work properly.'));
+            // We'll still start the server but might not have WebSocket connection
+        } else {
+            // Connect to WebSocket server
+            this.connectToWsServer();
+        }
+
+        this.initialized = true;
+        return true;
+    }
+    
     // Start the server
-    public start() {
-        this.server.listen(this.port, () => {
-            console.error(chalk.green(`Visualization server running at http://localhost:${this.port}`));
+    public async start(): Promise<boolean> {
+        if (!this.initialized) {
+            const initResult = await this.initialize();
+            if (!initResult) {
+                console.error(chalk.red("Failed to initialize visualization server"));
+                return false;
+            }
+        }
+        
+        return new Promise((resolve) => {
+            try {
+                this.server.listen(this.port, () => {
+                    console.error(chalk.green(`Visualization server running at http://localhost:${this.port}`));
+                    resolve(true);
+                });
+                
+                this.server.on('error', (err: NodeJS.ErrnoException) => {
+                    if (err.code === 'EADDRINUSE') {
+                        console.error(chalk.red(`Port ${this.port} is already in use.`));
+                        console.error(chalk.yellow('Visualization server will not start.'));
+                        resolve(false);
+                    } else {
+                        console.error(chalk.red(`Server error: ${err.message}`));
+                        resolve(false);
+                    }
+                });
+            } catch (error) {
+                console.error(chalk.red('Error starting visualization server:'), error);
+                resolve(false);
+            }
+        });
+    }
+    
+    // Stop the server
+    public stop(): Promise<void> {
+        return new Promise((resolve) => {
+            // Close WebSocket client if open
+            if (this.wsClient) {
+                this.wsClient.close();
+                this.wsClient = null;
+            }
+            
+            // Clear reconnect interval if set
+            if (this.wsReconnectInterval) {
+                clearInterval(this.wsReconnectInterval);
+                this.wsReconnectInterval = null;
+            }
+            
+            // Close Socket.IO server
+            this.io.close();
+            
+            // Close HTTP server
+            this.server.close(() => {
+                console.error(chalk.yellow('Visualization server stopped'));
+                resolve();
+            });
         });
     }
 

@@ -10,9 +10,8 @@ import {
 import chalk from 'chalk';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { fork } from 'child_process';
-import path from 'path';
-import { VisualizationServer } from './visualization-server.js';
+import { WebSocketServer } from './websocket-server.js';
+import { isPortAvailable, canConnectToPort } from './port-checker.js';
 import { z } from 'zod';
 
 // Create Zod schemas for resources and prompts list methods
@@ -65,8 +64,8 @@ interface DecompositionState {
   isCompleted: boolean;
 }
 
-// Keep track of visualization server instance
-let visualizationServer: VisualizationServer | null = null;
+// Create WebSocket server for communication with visualization
+let wsServer: WebSocketServer | null = null;
 
 class AtomOfThoughtsServer {
   protected atoms: Record<string, AtomData> = {};
@@ -199,10 +198,8 @@ class AtomOfThoughtsServer {
           verifiedHypothesisIds.forEach(hypId => {
             this.atoms[hypId].isVerified = true;
 
-            // Update visualization if server is active
-            if (visualizationServer) {
-              visualizationServer.updateAtom(this.atoms[hypId]);
-            }
+            // Send atom update to visualization server
+            wsServer?.sendMessage('atom-update', this.atoms[hypId]);
           });
 
           // Check if this should trigger a contraction
@@ -210,10 +207,8 @@ class AtomOfThoughtsServer {
         }
       }
 
-      // Update visualization if server is active
-      if (visualizationServer) {
-        visualizationServer.updateAtom(this.atoms[atomId]);
-      }
+      // Send atom update to visualization server
+      wsServer?.sendMessage('atom-update', this.atoms[atomId]);
     }
   }
 
@@ -266,10 +261,9 @@ class AtomOfThoughtsServer {
 
     console.error(chalk.cyan(`➕ Added atom ${atomId} to decomposition ${decompositionId}`));
 
-    // Update visualization if server is active
-    if (visualizationServer) {
-      visualizationServer.updateAtom(this.atoms[atomId]);
-    }
+    // Send atom update to visualization server
+    wsServer?.sendMessage('atom-update', this.atoms[atomId]);
+    wsServer?.sendMessage('atoms-order', this.atomOrder);
 
     return true;
   }
@@ -326,10 +320,8 @@ class AtomOfThoughtsServer {
 
     console.error(chalk.magenta(`🔄 Contracted decomposition ${decompositionId} back to atom ${state.originalAtomId} with confidence ${(averageConfidence * 100).toFixed(0)}%`));
 
-    // Update visualization if server is active
-    if (visualizationServer) {
-      visualizationServer.updateAtom(originalAtom);
-    }
+    // Send atom update to visualization server
+    wsServer?.sendMessage('atom-update', originalAtom);
 
     // If the contracted atom is a hypothesis and is verified with high confidence, 
     // we might want to automatically create a conclusion based on it
@@ -358,10 +350,9 @@ class AtomOfThoughtsServer {
 
     console.error(chalk.green(`🏆 Suggested conclusion ${conclusionId} based on verified hypothesis ${verifiedHypothesis.atomId}`));
 
-    // Update visualization if server is active
-    if (visualizationServer) {
-      visualizationServer.updateAtom(conclusionAtom);
-    }
+    // Send atom update to visualization server
+    wsServer?.sendMessage('atom-update', conclusionAtom);
+    wsServer?.sendMessage('atoms-order', this.atomOrder);
 
     return conclusionId;
   }
@@ -451,10 +442,9 @@ class AtomOfThoughtsServer {
         this.atomOrder.push(validatedInput.atomId);
       }
 
-      // Update visualization if server is active
-      if (visualizationServer) {
-        visualizationServer.updateAtom(validatedInput);
-      }
+      // Send atom update to visualization server
+      wsServer?.sendMessage('atom-update', validatedInput);
+      wsServer?.sendMessage('atoms-order', this.atomOrder);
 
       // Automatically add to current decomposition if there is one
       if (this.currentDecompositionId) {
@@ -576,10 +566,9 @@ class AtomOfThoughtsLightServer extends AtomOfThoughtsServer {
         this.atomOrder.push(validatedInput.atomId);
       }
 
-      // Update visualization if server is active
-      if (visualizationServer) {
-        visualizationServer.updateAtom(validatedInput);
-      }
+      // Send atom update to visualization server
+      wsServer?.sendMessage('atom-update', validatedInput);
+      wsServer?.sendMessage('atoms-order', this.atomOrder);
 
       // Format and display the atom with simplified output
       const formattedAtom = this.formatAtom(validatedInput);
@@ -971,19 +960,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function runServer() {
-  if (argv.visualize) {
-    const visualizerPath = path.resolve('./build/visualize.js');
-    const child = fork(visualizerPath, [`--port=${argv.port}`], {
-      stdio: 'ignore',
-      detached: true
-    });
-    child.unref();
-    console.error(chalk.green(`🧠 Visualization started in separate process on port ${argv.port}`));
+  try {
+    // First check if an MCP server is already running (by checking the WebSocket port)
+    const wsPortAvailable = await isPortAvailable(8090);
+    
+    if (!wsPortAvailable) {
+      // Port is already in use - likely another MCP server is running
+      const canConnect = await canConnectToPort(8090);
+      
+      if (canConnect) {
+        console.error(chalk.yellow("Another Atom of Thoughts MCP server is already running"));
+        console.error(chalk.yellow("This process will exit to avoid conflicts"));
+        process.exit(0); // Exit gracefully, letting the running instance handle requests
+      } else {
+        console.error(chalk.red("WebSocket port 8090 is in use but cannot connect to it"));
+        console.error(chalk.red("Attempting to proceed, but this may cause issues"));
+      }
+    }
+    
+    // Initialize the WebSocket server
+    wsServer = new WebSocketServer(8090);
+    const wsInitialized = await wsServer.init();
+    
+    if (!wsInitialized && wsServer) {
+      // Initialization failed, but we'll continue without WebSocket
+      // We'll keep the wsServer instance for sendMessage attempts (which will be no-ops)
+      console.error(chalk.yellow("Continuing without WebSocket visualization support"));
+    }
+    
+    // Start the MCP server
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error(chalk.green("Atom of Thoughts MCP Server running on stdio"));
+  } catch (error) {
+    console.error(chalk.red("Error starting MCP server:"), error);
+    process.exit(1);
   }
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Atom of Thoughts MCP Server running on stdio");
 }
 
 
